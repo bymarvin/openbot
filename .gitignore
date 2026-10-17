@@ -19,3 +19,15 @@ frontend/release/
 
 .serena/
 secret.key
+
+# Review/PR scratch artifacts (bot-generated diffs, bodies, file comparisons)
+.review*
+.pr*
+.head_*
+.main_*
+# Old runtime dirs and DB backups
+.openbot.old/
+# Worktree and submodule leftovers
+.worktrees/
+openbot-renaming
+repo_link_target
