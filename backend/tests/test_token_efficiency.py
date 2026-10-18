@@ -451,6 +451,40 @@ def test_summarization_defaults_sit_above_the_clearing_trigger():
     assert 22 <= s.summary_keep_messages <= 40
 
 
+def test_huge_catalog_output_limit_does_not_shrink_a_large_window():
+    """GLM-5.3-Flash's catalog entry lists a 943,717-token output limit in a 1,048,576 window. Reserving
+    all of it summarized the 1M model at ~70k and cleared at ~47k, so bots re-read what they had just
+    lost (2026-10-17). The reserve holds room for one reply, OUTPUT_TOKEN_MAX at most."""
+    from openbot.runtime.context_limits import (
+        MAX_DERIVED_SUMMARY_TRIGGER,
+        OUTPUT_TOKEN_MAX,
+        derive_trigger_thresholds,
+    )
+    huge = derive_trigger_thresholds(1_048_576, summary_trigger=None, clear_trigger=None, output_limit=943_717)
+    sane = derive_trigger_thresholds(1_048_576, summary_trigger=None, clear_trigger=None, output_limit=OUTPUT_TOKEN_MAX)
+    assert huge == sane
+    summary, clear = huge
+    assert summary == MAX_DERIVED_SUMMARY_TRIGGER
+    assert 100_000 < clear < summary
+
+
+def test_derived_summary_trigger_has_a_ceiling_but_overrides_do_not():
+    """Each call re-sends the whole context, so a 1M window summarizing at ~700k made every call slow and
+    costly. Derived triggers stop at MAX_DERIVED_SUMMARY_TRIGGER; an explicit setting is user intent."""
+    from openbot.runtime.context_limits import (
+        MAX_DERIVED_SUMMARY_TRIGGER,
+        derive_trigger_thresholds,
+    )
+    summary, clear = derive_trigger_thresholds(1_000_000, summary_trigger=None, clear_trigger=None, output_limit=131_072)
+    assert summary == MAX_DERIVED_SUMMARY_TRIGGER and clear < summary
+    assert derive_trigger_thresholds(
+        1_000_000, summary_trigger=500_000, clear_trigger=300_000, output_limit=131_072
+    ) == (500_000, 300_000)
+    # Windows whose derived trigger sits under the ceiling are unchanged by it.
+    summary, _clear = derive_trigger_thresholds(200_000, summary_trigger=None, clear_trigger=None, output_limit=64_000)
+    assert summary == int((200_000 - 32_000 - 4_000) * 0.7)
+
+
 async def test_long_runs_get_their_history_summarized(settings):
     settings.summary_trigger_tokens = 300
     settings.summary_keep_messages = 4
@@ -745,3 +779,19 @@ async def test_stream_counts_a_reply_once_even_when_a_middleware_node_re_emits_i
     assert usage["model_calls"] == 2 and usage["prompt_tokens"] == 220
     kinds = [e.type for e in await events(services, run.id)]
     assert kinds.count("tool_call") == 1 and kinds.count("text") == 2
+
+
+def test_system_prompt_comes_out_of_the_derived_window():
+    """The triggers count only the run's messages; the system prompt rides on every call. Under a 200k
+    window a ~50k system prompt plus a full reply pushed the summary trigger past the window."""
+    from openbot.runtime.context_limits import derive_trigger_thresholds
+    bare, _ = derive_trigger_thresholds(200_000, summary_trigger=None, clear_trigger=None, output_limit=64_000)
+    with_prompt, clear = derive_trigger_thresholds(
+        200_000, summary_trigger=None, clear_trigger=None, output_limit=64_000, fixed_tokens=50_000
+    )
+    assert with_prompt == int((200_000 - 32_000 - 4_000 - 50_000) * 0.7) < bare
+    assert with_prompt + 50_000 + 32_000 < 200_000 and clear < with_prompt
+    # Explicit settings are user intent and ignore the deduction.
+    assert derive_trigger_thresholds(
+        200_000, summary_trigger=90_000, clear_trigger=60_000, fixed_tokens=50_000
+    ) == (90_000, 60_000)
