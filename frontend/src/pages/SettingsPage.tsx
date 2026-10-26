@@ -403,10 +403,13 @@ function McpServerDialog({ server, onClose, onSaved }: { server?: McpServer; onC
         ? { url: url.trim(), headers: kv.values }
         : { command: command.trim(), args: parseArgs(args), env: kv.values, cwd: cwd.trim() || null };
       if (!editing) return Api.addMcpServer({ name: name.trim(), ...body });
-      for (const b of bots.data ?? []) {
-        if (b.id in grants) await Api.updateBot(b.id, setGroup(b, serverTools, grants[b.id]));
+      try {
+        for (const b of bots.data ?? []) {
+          if (b.id in grants) await Api.updateBot(b.id, setGroup(b, serverTools, grants[b.id]));
+        }
+      } finally {
+        if (Object.keys(grants).length) { qc.invalidateQueries({ queryKey: ["bots"] }); qc.invalidateQueries({ queryKey: ["bot"] }); }
       }
-      if (Object.keys(grants).length) { qc.invalidateQueries({ queryKey: ["bots"] }); qc.invalidateQueries({ queryKey: ["bot"] }); }
       return Api.updateMcpServer(server!.name, body);
     },
     onSuccess: onSaved,
@@ -483,7 +486,7 @@ function McpServerDialog({ server, onClose, onSaved }: { server?: McpServer; onC
         </div>
       )}
       <Hint className="text-xs">Only add servers from developers you trust. OpenBot does not control which tools a server exposes or what they do, and every bot you grant those tools acts with whatever access you provide. Mark tools that write as needing approval in the bot editor.</Hint>
-      <ErrorText error={save.error} />
+      <ErrorText error={save.error ?? bots.error} />
       <div className="flex justify-end gap-2">
         <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
         <Button type="submit" disabled={save.isPending || (touched && (Object.keys(errors).length > 0 || !!kv.error))}>{save.isPending ? "Saving…" : editing ? "Save" : "Continue"}</Button>
